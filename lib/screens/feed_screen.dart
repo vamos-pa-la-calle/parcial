@@ -20,62 +20,85 @@ class _FeedScreenState extends State<FeedScreen> {
     'assets/videos/video4.mp4',
   ];
 
-  final List<VideoPlayerController> _controllers = [];
-
-  int _currentIndex = 0;
-  bool _ready = false;
-  String? _error;
+  final List<VideoPlayerController?> _controllers = [null, null, null, null];
 
   final Set<int> _likedVideos = {};
+  final Map<int, String> _videoErrors = {};
+
+  int _currentIndex = 0;
+  bool _loading = true;
 
   @override
   void initState() {
     super.initState();
-    _initializeVideos();
+    _initializeVideo(0);
   }
 
-  Future<void> _initializeVideos() async {
-    try {
-      for (final video in _videos) {
-        final controller = VideoPlayerController.asset(video);
-        _controllers.add(controller);
+  Future<void> _initializeVideo(int index) async {
+    if (_controllers[index] != null) return;
 
-        await controller.initialize();
-        await controller.setLooping(true);
-        await controller.setVolume(1);
-      }
+    final controller = VideoPlayerController.asset(_videos[index]);
+    _controllers[index] = controller;
+
+    try {
+      await controller.initialize();
+      await controller.setLooping(true);
+      await controller.setVolume(1);
 
       if (!mounted) return;
 
       setState(() {
-        _ready = true;
+        _loading = false;
+        _videoErrors.remove(index);
       });
 
-      await _controllers[0].play();
-    } catch (e) {
-      debugPrint('Error cargando videos: $e');
-
-      if (mounted) {
-        setState(() {
-          _error = 'No se pudieron cargar los videos. Revisa los archivos MP4.';
-        });
+      if (index == _currentIndex) {
+        await controller.play();
       }
+    } catch (e) {
+      debugPrint('Error cargando video $index: $e');
+
+      if (!mounted) return;
+
+      setState(() {
+        _loading = false;
+        _videoErrors[index] = e.toString();
+      });
     }
   }
 
-  void _changeVideo(int index) {
-    _controllers[_currentIndex].pause();
+  Future<void> _changeVideo(int index) async {
+    final previousIndex = _currentIndex;
+    final previousController = _controllers[previousIndex];
+
+    if (previousController != null && previousController.value.isInitialized) {
+      await previousController.pause();
+    }
+
+    if (!mounted) return;
 
     setState(() {
       _currentIndex = index;
+      _loading = _controllers[index] == null;
     });
 
-    _controllers[index].seekTo(Duration.zero);
-    _controllers[index].play();
+    await _initializeVideo(index);
+
+    final controller = _controllers[index];
+
+    if (mounted &&
+        index == _currentIndex &&
+        controller != null &&
+        controller.value.isInitialized) {
+      await controller.seekTo(Duration.zero);
+      await controller.play();
+    }
   }
 
   void _togglePlay() {
     final controller = _controllers[_currentIndex];
+
+    if (controller == null || !controller.value.isInitialized) return;
 
     setState(() {
       if (controller.value.isPlaying) {
@@ -99,7 +122,7 @@ class _FeedScreenState extends State<FeedScreen> {
     _pageController.dispose();
 
     for (final controller in _controllers) {
-      controller.dispose();
+      controller?.dispose();
     }
 
     super.dispose();
@@ -108,26 +131,6 @@ class _FeedScreenState extends State<FeedScreen> {
   @override
   Widget build(BuildContext context) {
     final user = FirebaseAuth.instance.currentUser;
-
-    if (_error != null) {
-      return Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(
-          child: Text(
-            _error!,
-            style: const TextStyle(color: Colors.white),
-            textAlign: TextAlign.center,
-          ),
-        ),
-      );
-    }
-
-    if (!_ready) {
-      return const Scaffold(
-        backgroundColor: Colors.black,
-        body: Center(child: CircularProgressIndicator(color: Colors.pink)),
-      );
-    }
 
     return Scaffold(
       backgroundColor: Colors.black,
@@ -138,20 +141,43 @@ class _FeedScreenState extends State<FeedScreen> {
         onPageChanged: _changeVideo,
         itemBuilder: (context, index) {
           final controller = _controllers[index];
+          final isCurrent = index == _currentIndex;
 
           return GestureDetector(
-            onTap: index == _currentIndex ? _togglePlay : null,
+            onTap: isCurrent ? _togglePlay : null,
             child: Stack(
               fit: StackFit.expand,
               children: [
-                Center(
-                  child: AspectRatio(
-                    aspectRatio: controller.value.aspectRatio,
-                    child: VideoPlayer(controller),
-                  ),
-                ),
+                Container(color: Colors.black),
 
-                if (index == _currentIndex && !controller.value.isPlaying)
+                if (_videoErrors.containsKey(index))
+                  Center(
+                    child: Padding(
+                      padding: const EdgeInsets.all(20),
+                      child: Text(
+                        'No se pudo cargar el video ${index + 1}.\n'
+                        '${_videoErrors[index]}',
+                        style: const TextStyle(color: Colors.white),
+                        textAlign: TextAlign.center,
+                      ),
+                    ),
+                  )
+                else if (controller == null || !controller.value.isInitialized)
+                  const Center(
+                    child: CircularProgressIndicator(color: Colors.pink),
+                  )
+                else
+                  Center(
+                    child: AspectRatio(
+                      aspectRatio: controller.value.aspectRatio,
+                      child: VideoPlayer(controller),
+                    ),
+                  ),
+
+                if (isCurrent &&
+                    controller != null &&
+                    controller.value.isInitialized &&
+                    !controller.value.isPlaying)
                   const Center(
                     child: Icon(
                       Icons.play_arrow,
@@ -205,7 +231,8 @@ class _FeedScreenState extends State<FeedScreen> {
                             ),
                             const SizedBox(height: 8),
                             Text(
-                              'Disfrutando del video ${index + 1} #Flutter #Videos',
+                              'Disfrutando del video ${index + 1} '
+                              '#Flutter #Videos',
                               style: const TextStyle(
                                 color: Colors.white,
                                 fontSize: 14,
@@ -214,7 +241,6 @@ class _FeedScreenState extends State<FeedScreen> {
                           ],
                         ),
                       ),
-
                       Column(
                         children: [
                           IconButton(
